@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -39,7 +40,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,16 +51,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ld_calender.ui.theme.LDCalenderTheme
@@ -80,6 +86,14 @@ class MainActivity : ComponentActivity() {
 
 enum class ViewMode { YEAR, MONTH, WEEK, DAY }
 
+/** State that drives the slide animation between views/dates. */
+private data class NavContentState(
+    val mode: ViewMode,
+    val year: Int,
+    val month: Int,
+    val day: Int
+)
+
 @Composable
 fun CalendarApp() {
     val today = Calendar.getInstance()
@@ -94,11 +108,17 @@ fun CalendarApp() {
     var slideDirection by remember { mutableStateOf(0) } // 1 = next day (from right), -1 = prev day (from left)
     var showYearPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showCustomFestivals by remember { mutableStateOf(false) }
     var weekStartMonday by remember { mutableStateOf(true) } // true=周一, false=周日
-    var cardHeightFraction by remember { mutableFloatStateOf(0.85f) } // card height fraction, adjustable by drag
+    var reverseArrowDirection by remember { mutableStateOf(false) } // true=交换左右箭头功能
 
     val context = LocalContext.current
     PlanStorage.initialize(context)
+    // Initialize custom lunar festivals from storage
+    var customFestivals by remember { mutableStateOf(CustomFestivalStorage.loadAll(context)) }
+    LaunchedEffect(Unit) {
+        LunarCalendar.customFestivals = customFestivals
+    }
     fun dateKey(y: Int, m: Int, d: Int) = "${y}-${String.format("%02d", m)}-${String.format("%02d", d)}"
     val currentKey = dateKey(selectedYear, selectedMonth, selectedDay)
 
@@ -111,9 +131,6 @@ fun CalendarApp() {
         prevKey.value = currentKey
         planText = PlanStorage.getPlan(context, currentKey)
     }
-
-    val lunarString = LunarCalendar.getLunarString(selectedYear, selectedMonth, selectedDay)
-    val weekdayChinese = LunarCalendar.getWeekdayChinese(selectedYear, selectedMonth, selectedDay)
 
     // Helper to go to next day
     fun goToNextDay() {
@@ -139,11 +156,82 @@ fun CalendarApp() {
         selectedDay = cal.get(Calendar.DAY_OF_MONTH)
     }
 
+    // Navigate to next day/period based on current view mode
+    fun navigateNext() {
+        slideDirection = 1
+        when (viewMode) {
+            ViewMode.YEAR -> selectedYear++
+            ViewMode.MONTH -> {
+                if (selectedMonth == 12) {
+                    selectedMonth = 1
+                    selectedYear++
+                } else {
+                    selectedMonth++
+                }
+            }
+            ViewMode.WEEK -> {
+                val cal = Calendar.getInstance().apply {
+                    set(selectedYear, selectedMonth - 1, selectedDay)
+                    add(Calendar.DAY_OF_MONTH, 7)
+                }
+                selectedYear = cal.get(Calendar.YEAR)
+                selectedMonth = cal.get(Calendar.MONTH) + 1
+                selectedDay = cal.get(Calendar.DAY_OF_MONTH)
+            }
+            ViewMode.DAY -> goToNextDay()
+        }
+    }
+
+    // Navigate to previous day/period based on current view mode
+    fun navigatePrev() {
+        slideDirection = -1
+        when (viewMode) {
+            ViewMode.YEAR -> selectedYear--
+            ViewMode.MONTH -> {
+                if (selectedMonth == 1) {
+                    selectedMonth = 12
+                    selectedYear--
+                } else {
+                    selectedMonth--
+                }
+            }
+            ViewMode.WEEK -> {
+                val cal = Calendar.getInstance().apply {
+                    set(selectedYear, selectedMonth - 1, selectedDay)
+                    add(Calendar.DAY_OF_MONTH, -7)
+                }
+                selectedYear = cal.get(Calendar.YEAR)
+                selectedMonth = cal.get(Calendar.MONTH) + 1
+                selectedDay = cal.get(Calendar.DAY_OF_MONTH)
+            }
+            ViewMode.DAY -> goToPrevDay()
+        }
+    }
+
+    // Content state used to trigger the slide animation
+    val navState = NavContentState(viewMode, selectedYear, selectedMonth, selectedDay)
+
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .pointerInput(Unit) {
+                    var totalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (totalDrag < -100f) {
+                                navigateNext()
+                            } else if (totalDrag > 100f) {
+                                navigatePrev()
+                            }
+                            totalDrag = 0f
+                        },
+                        onHorizontalDrag = { _, dragAmount ->
+                            totalDrag += dragAmount
+                        }
+                    )
+                }
         ) {
             Column(
                 modifier = Modifier
@@ -152,267 +240,214 @@ fun CalendarApp() {
                     .padding(top = 24.dp, bottom = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-            // Year view: fixed title header + scrollable 12-month cards
-            if (viewMode == ViewMode.YEAR) {
-                // Fixed year title
-                val deepGreen = Color(0xFF2E7D32)
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFFD4EDDA), RoundedCornerShape(16.dp))
-                            .clickable { showYearPicker = true }
-                            .padding(horizontal = 24.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "${selectedYear}年",
-                            fontSize = 48.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = deepGreen,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    // Weekday header row (moved here from individual month cards)
-                    val headerLabels = if (weekStartMonday) listOf("一", "二", "三", "四", "五", "六", "日")
-                                       else listOf("日", "一", "二", "三", "四", "五", "六")
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        headerLabels.forEach { name ->
-                            Text(
-                                text = name,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = deepGreen.copy(alpha = 0.6f),
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-
-                // Scrollable month cards
-                YearView(
-                    year = selectedYear,
-                    currentMonth = currentMonth,
-                    currentYear = currentYear,
-                    weekStartMonday = weekStartMonday,
-                    onDayClick = { month, day ->
-                        selectedMonth = month
-                        selectedDay = day
-                        viewMode = ViewMode.DAY
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-            } else if (viewMode == ViewMode.MONTH) {
-                // Month view
-                MonthViewDetail(
-                    year = selectedYear,
-                    month = selectedMonth,
-                    currentYear = currentYear,
-                    currentMonth = currentMonth,
-                    currentDay = currentDay,
-                    weekStartMonday = weekStartMonday,
-                    onDayClick = { day ->
-                        selectedDay = day
-                        viewMode = ViewMode.DAY
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-            } else if (viewMode == ViewMode.WEEK) {
-                // Week view
-                val contextForWeek = context
-                WeekViewDetail(
-                    year = selectedYear,
-                    month = selectedMonth,
-                    day = selectedDay,
-                    currentYear = currentYear,
-                    currentMonth = currentMonth,
-                    currentDay = currentDay,
-                    weekStartMonday = weekStartMonday,
-                    onDayClick = { y, m, d ->
-                        selectedYear = y
-                        selectedMonth = m
-                        selectedDay = d
-                        viewMode = ViewMode.DAY
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-            } else {
-                // Day view card with swipe gesture + slide animation
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .fillMaxHeight(cardHeightFraction)
-                            .pointerInput(Unit) {
-                                var totalDrag = 0f
-                                detectHorizontalDragGestures(
-                                    onDragEnd = {
-                                        if (totalDrag < -100f) {
-                                            goToNextDay()
-                                        } else if (totalDrag > 100f) {
-                                            goToPrevDay()
-                                        }
-                                        totalDrag = 0f
-                                    },
-                                    onHorizontalDrag = { _, dragAmount ->
-                                        totalDrag += dragAmount
-                                    }
-                                )
+                val contentState = navState
+                val dir = slideDirection
+                AnimatedContent(
+                    targetState = contentState,
+                    transitionSpec = {
+                        if (targetState.mode != initialState.mode) {
+                            // Mode switch: fade
+                            (fadeIn() togetherWith fadeOut()).using(SizeTransform(clip = false))
+                        } else {
+                            // Same mode: horizontal slide, direction follows setting/arrow
+                            if (dir > 0) {
+                                (slideInHorizontally { it } togetherWith slideOutHorizontally { -it })
+                            } else {
+                                (slideInHorizontally { -it } togetherWith slideOutHorizontally { it })
                             }
-                    ) {
-                        val dateKey = "${selectedYear}-${selectedMonth}-${selectedDay}"
-                        val dir = slideDirection
-                        AnimatedContent(
-                            targetState = dateKey,
-                            transitionSpec = {
-                                if (dir > 0) {
-                                    (slideInHorizontally { it } togetherWith
-                                            slideOutHorizontally { -it })
-                                } else {
-                                    (slideInHorizontally { -it } togetherWith
-                                            slideOutHorizontally { it })
-                                }
-                            },
-                            label = "dateTransition"
-                        ) {
-                            CurvedCalendarCard(
-                                year = selectedYear,
-                                month = selectedMonth,
-                                day = selectedDay,
-                                weekdayChinese = weekdayChinese,
-                                lunarString = lunarString,
-                                planText = planText,
-                                onPlanTextChange = { newText ->
-                                    planText = newText
-                                    PlanStorage.setPlan(context, currentKey, newText)
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
                         }
-                    }
-
-                    // Drag handle for resizing
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(20.dp)
-                            .pointerInput(Unit) {
-                                detectVerticalDragGestures { _, dragAmount ->
-                                    val delta = -dragAmount / 700f  // convert px to fraction
-                                    cardHeightFraction = (cardHeightFraction + delta).coerceIn(0.45f, 0.95f)
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = "contentTransition"
+                ) { state ->
+                    val year = state.year
+                    val month = state.month
+                    val day = state.day
+                    when (state.mode) {
+                        ViewMode.YEAR -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                // Fixed year title
+                                val deepGreen = Color(0xFF2E7D32)
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(Color(0xFFD4EDDA), RoundedCornerShape(16.dp))
+                                            .clickable { showYearPicker = true }
+                                            .padding(horizontal = 24.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "${year}年",
+                                            fontSize = 48.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = deepGreen,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    // Weekday header row
+                                    val headerLabels = if (weekStartMonday) listOf("一", "二", "三", "四", "五", "六", "日")
+                                                       else listOf("日", "一", "二", "三", "四", "五", "六")
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp),
+                                        horizontalArrangement = Arrangement.SpaceEvenly
+                                    ) {
+                                        headerLabels.forEach { name ->
+                                            Text(
+                                                text = name,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = deepGreen.copy(alpha = 0.6f),
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
                                 }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .width(40.dp)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Color(0xFFCCCCCC))
-                        )
+
+                                // Scrollable month cards
+                                YearView(
+                                    year = year,
+                                    currentMonth = currentMonth,
+                                    currentYear = currentYear,
+                                    weekStartMonday = weekStartMonday,
+                                    onDayClick = { m, d ->
+                                        selectedMonth = m
+                                        selectedDay = d
+                                        viewMode = ViewMode.DAY
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
+                        ViewMode.MONTH -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                // Month view
+                                MonthViewDetail(
+                                    year = year,
+                                    month = month,
+                                    currentYear = currentYear,
+                                    currentMonth = currentMonth,
+                                    currentDay = currentDay,
+                                    weekStartMonday = weekStartMonday,
+                                    onDayClick = { d ->
+                                        selectedDay = d
+                                        viewMode = ViewMode.DAY
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
+                        ViewMode.WEEK -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                // Week view
+                                WeekViewDetail(
+                                    year = year,
+                                    month = month,
+                                    day = day,
+                                    currentYear = currentYear,
+                                    currentMonth = currentMonth,
+                                    currentDay = currentDay,
+                                    weekStartMonday = weekStartMonday,
+                                    onDayClick = { y, m, d ->
+                                        selectedYear = y
+                                        selectedMonth = m
+                                        selectedDay = d
+                                        viewMode = ViewMode.DAY
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
+                        ViewMode.DAY -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                // Day view card
+                                val weekdayChinese = LunarCalendar.getWeekdayChinese(year, month, day)
+                                val lunarString = LunarCalendar.getLunarString(year, month, day)
+                                val specialDayText = LunarCalendar.getSpecialDayText(year, month, day)
+                                val keyForDay = dateKey(year, month, day)
+
+                                Column(
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f)
+                                    ) {
+                                        CurvedCalendarCard(
+                                            year = year,
+                                            month = month,
+                                            day = day,
+                                            weekdayChinese = weekdayChinese,
+                                            lunarString = lunarString,
+                                            specialDayText = specialDayText,
+                                            planText = planText,
+                                            onPlanTextChange = { newText ->
+                                                planText = newText
+                                                PlanStorage.setPlan(context, keyForDay, newText)
+                                            },
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+
+                                    // Spacing between card and ad placeholder below
+                                    Spacer(modifier = Modifier.height(5.dp))
+                                }
+
+                                // Plan management row
+                                PlanManagementRow(
+                                    hasPlan = planText.isNotEmpty(),
+                                    onExport = { /* TODO */ },
+                                    onDelete = {
+                                        PlanStorage.deletePlan(context, keyForDay)
+                                        planText = ""
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
                     }
                 }
 
-                // Plan management row
-                PlanManagementRow(
-                    hasPlan = planText.isNotEmpty(),
-                    onExport = { /* TODO */ },
-                    onDelete = {
-                        PlanStorage.deletePlan(context, currentKey)
-                        planText = ""
+                // Bottom control bar
+                BottomControlBar(
+                    viewMode = viewMode,
+                    onViewModeChange = { viewMode = it },
+                    reverseArrows = reverseArrowDirection,
+                    onLongPress = {
+                        // Jump to today
+                        selectedYear = currentYear
+                        selectedMonth = currentMonth
+                        selectedDay = currentDay
                     },
+                    onSettingsClick = { showSettings = true },
+                    onPrevious = { navigatePrev() },
+                    onNext = { navigateNext() },
                     modifier = Modifier.fillMaxWidth()
                 )
-
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // Bottom control bar
-            BottomControlBar(
-                viewMode = viewMode,
-                onViewModeChange = { viewMode = it },
-                onLongPress = {
-                    // Jump to today
-                    selectedYear = currentYear
-                    selectedMonth = currentMonth
-                    selectedDay = currentDay
-                },
-                onSettingsClick = { showSettings = true },
-                onPrevious = {
-                    when (viewMode) {
-                        ViewMode.YEAR -> selectedYear--
-                        ViewMode.MONTH -> {
-                            if (selectedMonth == 1) {
-                                selectedMonth = 12
-                                selectedYear--
-                            } else {
-                                selectedMonth--
-                            }
-                        }
-                        ViewMode.WEEK -> {
-                            val cal = Calendar.getInstance().apply {
-                                set(selectedYear, selectedMonth - 1, selectedDay)
-                                add(Calendar.DAY_OF_MONTH, -7)
-                            }
-                            selectedYear = cal.get(Calendar.YEAR)
-                            selectedMonth = cal.get(Calendar.MONTH) + 1
-                            selectedDay = cal.get(Calendar.DAY_OF_MONTH)
-                        }
-                        ViewMode.DAY -> goToPrevDay()
-                    }
-                },
-                onNext = {
-                    when (viewMode) {
-                        ViewMode.YEAR -> selectedYear++
-                        ViewMode.MONTH -> {
-                            if (selectedMonth == 12) {
-                                selectedMonth = 1
-                                selectedYear++
-                            } else {
-                                selectedMonth++
-                            }
-                        }
-                        ViewMode.WEEK -> {
-                            val cal = Calendar.getInstance().apply {
-                                set(selectedYear, selectedMonth - 1, selectedDay)
-                                add(Calendar.DAY_OF_MONTH, 7)
-                            }
-                            selectedYear = cal.get(Calendar.YEAR)
-                            selectedMonth = cal.get(Calendar.MONTH) + 1
-                            selectedDay = cal.get(Calendar.DAY_OF_MONTH)
-                        }
-                        ViewMode.DAY -> goToNextDay()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
-        } // end Column
+            } // end Column
 
         // Year Picker Dialog (full-screen overlay)
         if (showYearPicker) {
@@ -432,7 +467,21 @@ fun CalendarApp() {
             SettingsDialog(
                 weekStartMonday = weekStartMonday,
                 onWeekStartChange = { weekStartMonday = it },
+                reverseArrows = reverseArrowDirection,
+                onReverseArrowsChange = { reverseArrowDirection = it },
+                onCustomFestivalsClick = { showCustomFestivals = true },
                 onDismiss = { showSettings = false }
+            )
+        }
+
+        // Custom Festival Management Dialog (full-screen overlay)
+        if (showCustomFestivals) {
+            CustomFestivalDialog(
+                onReload = {
+                    customFestivals = CustomFestivalStorage.loadAll(context)
+                    LunarCalendar.customFestivals = customFestivals
+                },
+                onDismiss = { showCustomFestivals = false }
             )
         }
     } // end Box
@@ -587,6 +636,53 @@ fun MiniMonthGrid(year: Int, month: Int, deepGreen: Color, weekStartMonday: Bool
 
 // ========== DAY VIEW CARD ==========
 
+/**
+ * Text that automatically shrinks its font size to fit the available width on a single line.
+ * Used for the lunar-date string which can be long on narrow screens.
+ */
+@Composable
+private fun AutoFitText(
+    text: String,
+    baseFontSize: TextUnit,
+    color: Color,
+    fontWeight: FontWeight,
+    minFontSize: TextUnit = 12.sp,
+    modifier: Modifier = Modifier
+) {
+    var availableWidthPx by remember { mutableStateOf(Int.MAX_VALUE) }
+    val density = LocalDensity.current
+    val fontScale = density.fontScale
+    val densityFactor = density.density
+    // Convert base font size (sp) to pixels
+    val basePx = baseFontSize.value * fontScale * densityFactor
+    val minPx = minFontSize.value * fontScale * densityFactor
+    // Available width: first frame uses base size, onSizeChanged fills in real px width
+    val availPx = availableWidthPx.toFloat()
+    // Each CJK glyph is roughly 1em wide; use 5% safety margin
+    val charCount = text.length.coerceAtLeast(1)
+    val sizePx = if (basePx * charCount * 1.05f > availPx) {
+        (availPx / (charCount * 1.05f)).coerceAtLeast(minPx)
+    } else {
+        basePx
+    }
+    val sizeSp = sizePx / (fontScale * densityFactor)
+
+    Box(
+        modifier = modifier.onSizeChanged { availableWidthPx = it.width },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            fontSize = sizeSp.sp,
+            color = color,
+            fontWeight = fontWeight,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            softWrap = false
+        )
+    }
+}
+
 @Composable
 fun CurvedCalendarCard(
     year: Int,
@@ -594,6 +690,7 @@ fun CurvedCalendarCard(
     day: Int,
     weekdayChinese: String,
     lunarString: String,
+    specialDayText: String,
     planText: String,
     onPlanTextChange: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -634,6 +731,7 @@ fun CurvedCalendarCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.45f)
+                    .offset(y = (-10).dp)
                     .padding(horizontal = 28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
@@ -651,6 +749,7 @@ fun CurvedCalendarCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.2f)
+                    .offset(y = (-25).dp)
                     .padding(horizontal = 28.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
@@ -670,27 +769,107 @@ fun CurvedCalendarCard(
                     )
                 }
             }
-            // Row 4: Lunar date
+            // Row 4: Lunar date (font auto-shrinks to fit available width)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.2f)
+                    .weight(0.15f)
+                    .offset(y = (-25).dp)
                     .padding(horizontal = 28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Text(
+                AutoFitText(
                     text = lunarString,
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.Bold,
+                    baseFontSize = 30.sp,
                     color = deepGreen,
-                    textAlign = TextAlign.Center
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth()
                 )
+            }
+            // Row 4.5: Special day (solar term / festival)
+            if (specialDayText.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.1f)
+                        .offset(y = (-25).dp)
+                        .padding(horizontal = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    val specialDays = LunarCalendar.getSpecialDays(year, month, day)
+
+                    // Adaptive badge row: shrinks font when multiple badges overflow
+                    var badgeRowWidthPx by remember { mutableStateOf(Int.MAX_VALUE) }
+                    val density = LocalDensity.current
+                    val fontScale = density.fontScale
+                    val densityFactor = density.density
+                    // Available width: first frame uses base size, onSizeChanged fills in real px width
+                    val availPx = badgeRowWidthPx.toFloat()
+                    // Fixed overhead per badge: horizontal padding 20dp + badge margin 8dp
+                    val fixedPx = 28.dp.value * densityFactor * specialDays.size
+                    // Base 18.sp -> px (per full-width char)
+                    val basePx = 18 * fontScale * densityFactor
+                    // Estimated total text width: CJK = 1.0em, half-width chars = 0.6em
+                    val charsWidth = specialDays.sumOf { sd ->
+                        sd.name.sumOf { ch -> if (ch.code > 0xFF) 1.0 else 0.6 }
+                    }.toFloat().coerceAtLeast(1f)
+                    val minPx = 10 * fontScale * densityFactor
+                    // Shrink font if badges would overflow the available width (10% safety)
+                    val sizePx = if (fixedPx + basePx * charsWidth * 1.1f > availPx) {
+                        ((availPx - fixedPx) / (charsWidth * 1.1f)).coerceAtLeast(minPx)
+                    } else {
+                        basePx
+                    }
+                    val sizeSp = sizePx / (fontScale * densityFactor)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onSizeChanged { badgeRowWidthPx = it.width },
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                            specialDays.forEach { sd ->
+                                val isTerm = sd.type == LunarCalendar.SpecialDayType.SOLAR_TERM
+                                val bg = if (isTerm) Color(0xFFFFF3E0) else Color(0xFFFFE0E0)
+                                val textColor = if (isTerm) Color(0xFFE65100) else Color(0xFFC62828)
+                                Box(
+                                    modifier = Modifier
+                                        .padding(horizontal = 4.dp)
+                                        .background(bg, RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = sd.name,
+                                        fontSize = sizeSp.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = textColor,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        style = TextStyle(
+                                            fontSize = sizeSp.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = textColor,
+                                            textAlign = TextAlign.Center,
+                                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+            } else {
+                // Spacer to keep layout consistent
+                Spacer(modifier = Modifier.height(0.dp).weight(0.1f).offset(y = (-20).dp))
             }
 
             // Divider
             HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 24.dp),
+                modifier = Modifier.padding(horizontal = 24.dp).offset(y = (-10).dp),
                 thickness = 1.dp,
                 color = deepGreen
             )
@@ -700,6 +879,7 @@ fun CurvedCalendarCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.55f)
+                    .offset(y = (-10).dp)
                     .padding(horizontal = 24.dp)
                     .padding(top = 16.dp, bottom = 16.dp)
             ) {
@@ -754,6 +934,7 @@ fun CurvedCalendarCard(
 fun BottomControlBar(
     viewMode: ViewMode,
     onViewModeChange: (ViewMode) -> Unit,
+    reverseArrows: Boolean = false,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onLongPress: () -> Unit,
@@ -768,10 +949,10 @@ fun BottomControlBar(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         // Left: left arrow
-        IconButton(onClick = onNext) {
+        IconButton(onClick = if (reverseArrows) onPrevious else onNext) {
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "下一天",
+                contentDescription = if (reverseArrows) "上一天" else "下一天",
                 tint = Color(0xFF666666),
                 modifier = Modifier.size(26.dp)
             )
@@ -782,10 +963,10 @@ fun BottomControlBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
-            IconButton(onClick = onPrevious) {
+            IconButton(onClick = if (reverseArrows) onNext else onPrevious) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = "上一天",
+                    contentDescription = if (reverseArrows) "下一天" else "上一天",
                     tint = Color(0xFF666666),
                     modifier = Modifier.size(26.dp)
                 )
@@ -836,37 +1017,27 @@ fun PlanManagementRow(
 ) {
     val deepGreen = Color(0xFF2E7D32)
 
-    Row(
+    Box(
         modifier = modifier
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp)
     ) {
-        Text(
-            text = "计划管理",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            color = deepGreen
-        )
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        if (hasPlan) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(deepGreen)
-                    .clickable(onClick = onDelete)
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "删除今日计划",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White
-                )
-            }
+        // 广告占位框
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(88.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFFF0F0F0), RoundedCornerShape(10.dp))
+                .border(1.dp, Color(0xFFD0D0D0), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "广告位",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Normal,
+                color = Color(0xFFBBBBBB)
+            )
         }
     }
 }
@@ -1015,6 +1186,8 @@ fun MonthViewDetail(
                                 if (day != null) {
                                     val isToday = isCurrent && day == currentDay
                                     val lunarDayName = LunarCalendar.getLunarDayName(year, month, day)
+                                    val specialDays = LunarCalendar.getSpecialDays(year, month, day)
+                                    val specialDayName = specialDays.firstOrNull()?.name ?: ""
 
                                     Box(
                                         modifier = Modifier
@@ -1041,13 +1214,26 @@ fun MonthViewDetail(
                                                 color = if (isToday) Color.White else deepGreen,
                                                 textAlign = TextAlign.Center
                                             )
-                                            Text(
-                                                text = lunarDayName,
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.Normal,
-                                                color = if (isToday) Color.White.copy(alpha = 0.85f) else deepGreen.copy(alpha = 0.65f),
-                                                textAlign = TextAlign.Center
-                                            )
+                                            if (specialDayName.isNotEmpty()) {
+                                                val isTerm = specialDays.first().type == LunarCalendar.SpecialDayType.SOLAR_TERM
+                                                val sdTextColor = if (isTerm) Color(0xFFE65100) else Color(0xFFC62828)
+                                                Text(
+                                                    text = specialDayName,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isToday) Color(0xFFFFEB3B) else sdTextColor,
+                                                    textAlign = TextAlign.Center,
+                                                    maxLines = 1
+                                                )
+                                            } else {
+                                                Text(
+                                                    text = lunarDayName,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Normal,
+                                                    color = if (isToday) Color.White.copy(alpha = 0.85f) else deepGreen.copy(alpha = 0.65f),
+                                                    textAlign = TextAlign.Center
+                                                )
+                                            }
                                         }
                                     }
                                 } else {
@@ -1185,6 +1371,8 @@ fun WeekViewDetail(
                                         date.second == currentMonth &&
                                         date.third == currentDay
                                 val lunarDayName = LunarCalendar.getLunarDayName(date.first, date.second, date.third)
+                                val specialDays = LunarCalendar.getSpecialDays(date.first, date.second, date.third)
+                                val specialDayName = specialDays.firstOrNull()?.name ?: ""
 
                                 Box(
                                     modifier = Modifier
@@ -1211,13 +1399,26 @@ fun WeekViewDetail(
                                             color = if (isToday) Color.White else deepGreen,
                                             textAlign = TextAlign.Center
                                         )
-                                        Text(
-                                            text = lunarDayName,
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Normal,
-                                            color = if (isToday) Color.White.copy(alpha = 0.85f) else deepGreen.copy(alpha = 0.65f),
-                                            textAlign = TextAlign.Center
-                                        )
+                                        if (specialDayName.isNotEmpty()) {
+                                            val isTerm = specialDays.first().type == LunarCalendar.SpecialDayType.SOLAR_TERM
+                                            val sdTextColor = if (isTerm) Color(0xFFE65100) else Color(0xFFC62828)
+                                            Text(
+                                                text = specialDayName,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isToday) Color(0xFFFFEB3B) else sdTextColor,
+                                                textAlign = TextAlign.Center,
+                                                maxLines = 1
+                                            )
+                                        } else {
+                                            Text(
+                                                text = lunarDayName,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Normal,
+                                                color = if (isToday) Color.White.copy(alpha = 0.85f) else deepGreen.copy(alpha = 0.65f),
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1416,6 +1617,9 @@ fun YearPickerDialog(
 fun SettingsDialog(
     weekStartMonday: Boolean,
     onWeekStartChange: (Boolean) -> Unit,
+    reverseArrows: Boolean,
+    onReverseArrowsChange: (Boolean) -> Unit,
+    onCustomFestivalsClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val deepGreen = Color(0xFF2E7D32)
@@ -1493,6 +1697,73 @@ fun SettingsDialog(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Row: Arrow navigation direction
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFF0F8F0))
+                    .clickable { onReverseArrowsChange(!reverseArrows) }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "左右箭头功能互换",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = deepGreen
+                    )
+                    Text(
+                        text = if (reverseArrows) "左箭头：前一天，右箭头：后一天" else "左箭头：后一天，右箭头：前一天",
+                        fontSize = 13.sp,
+                        color = deepGreen.copy(alpha = 0.6f)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .border(2.dp, if (reverseArrows) deepGreen else Color.Gray, RoundedCornerShape(4.dp))
+                        .background(if (reverseArrows) deepGreen else Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (reverseArrows) {
+                        Text(text = "✓", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Row: Custom Lunar Festivals
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFF0F8F0))
+                    .clickable { onCustomFestivalsClick() }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "自定义农历节日",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = deepGreen
+                )
+                Text(
+                    text = ">",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = deepGreen
+                )
+            }
         }
 
         // Close button
@@ -1516,6 +1787,428 @@ fun SettingsDialog(
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
+            }
+        }
+    }
+}
+
+// ========== CUSTOM FESTIVAL DIALOG ==========
+
+@Composable
+fun CustomFestivalDialog(
+    onReload: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val deepGreen = Color(0xFF2E7D32)
+    val lightGreenBg = Color(0xFFD4EDDA)
+    val context = LocalContext.current
+    var festivals by remember { mutableStateOf(CustomFestivalStorage.loadAll(context)) }
+    var showAddEdit by remember { mutableStateOf(false) }
+    var editingFestival by remember { mutableStateOf<CustomFestivalStorage.CustomFestival?>(null) }
+
+    // Full-screen overlay
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+    ) {
+        // Title bar
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(lightGreenBg)
+                .padding(vertical = 14.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "自定义农历节日",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = deepGreen
+            )
+        }
+
+        // Festival list
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            if (festivals.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "暂无自定义节日，点击下方按钮添加",
+                            fontSize = 14.sp,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            } else {
+                festivals.forEachIndexed { index, f ->
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFFF8F8F8))
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = f.name,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = deepGreen
+                                )
+                                Text(
+                                    text = "农历${f.lunarMonth}月${f.lunarDay}日" + if (f.includeLeap) " (含闰月)" else "",
+                                    fontSize = 13.sp,
+                                    color = deepGreen.copy(alpha = 0.7f)
+                                )
+                            }
+                            // Edit button
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFFE3F2FD))
+                                    .clickable {
+                                        editingFestival = f
+                                        showAddEdit = true
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(text = "编辑", fontSize = 13.sp, color = Color(0xFF1976D2))
+                            }
+                            // Delete button
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFFFFEBEE))
+                                    .clickable {
+                                        festivals = CustomFestivalStorage.delete(context, f.id)
+                                        onReload()
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(text = "删除", fontSize = 13.sp, color = Color(0xFFC62828))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bottom buttons
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Add button
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(deepGreen)
+                    .clickable {
+                        editingFestival = null
+                        showAddEdit = true
+                    }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "添加节日",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+            // Close button
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFFE0E0E0))
+                    .clickable(onClick = onDismiss)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "返回",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = deepGreen
+                )
+            }
+        }
+    }
+
+    // Add/Edit dialog
+    if (showAddEdit) {
+        AddEditFestivalDialog(
+            editingFestival = editingFestival,
+            onSave = { festival ->
+                if (editingFestival != null) {
+                    festivals = CustomFestivalStorage.update(context, festival)
+                } else {
+                    festivals = CustomFestivalStorage.add(context, festival)
+                }
+                onReload()
+                showAddEdit = false
+            },
+            onDismiss = { showAddEdit = false }
+        )
+    }
+}
+
+// ========== ADD/EDIT FESTIVAL DIALOG ==========
+
+@Composable
+fun AddEditFestivalDialog(
+    editingFestival: CustomFestivalStorage.CustomFestival?,
+    onSave: (CustomFestivalStorage.CustomFestival) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val deepGreen = Color(0xFF2E7D32)
+    var name by remember { mutableStateOf(editingFestival?.name ?: "") }
+    var lunarMonth by remember { mutableStateOf(editingFestival?.lunarMonth?.toString() ?: "1") }
+    var lunarDay by remember { mutableStateOf(editingFestival?.lunarDay?.toString() ?: "1") }
+    var includeLeap by remember { mutableStateOf(editingFestival?.includeLeap ?: false) }
+
+    val isEdit = editingFestival != null
+    val title = if (isEdit) "编辑节日" else "添加节日"
+
+    // Full-screen overlay (semi-transparent)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.5f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.White)
+                .clickable(enabled = false) {} // Prevent click-through
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = title,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = deepGreen,
+                modifier = Modifier.padding(bottom = 20.dp)
+            )
+
+            // Name field
+            Text(
+                text = "节日名称",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = deepGreen,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            BasicTextField(
+                value = name,
+                onValueChange = { name = it },
+                textStyle = TextStyle(fontSize = 16.sp, color = deepGreen, fontWeight = FontWeight.Bold),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(deepGreen),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFF5F5F5))
+                    .border(1.dp, Color(0xFFDDDDDD), RoundedCornerShape(8.dp))
+                    .padding(12.dp),
+                decorationBox = { innerTextField ->
+                    if (name.isEmpty()) {
+                        Text("如：壮族歌节", fontSize = 14.sp, color = Color.Gray)
+                    }
+                    innerTextField()
+                }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Month & Day row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Month selector
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "农历月",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = deepGreen
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFF5F5F5))
+                            .border(1.dp, Color(0xFFDDDDDD), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 12.dp)
+                    ) {
+                        var expanded by remember { mutableStateOf(false) }
+                        Box(modifier = Modifier.fillMaxWidth().clickable { expanded = true }) {
+                            Text(
+                                text = "${lunarMonth.toIntOrNull() ?: 1}月",
+                                fontSize = 16.sp,
+                                color = deepGreen
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            (1..12).forEach { m ->
+                                DropdownMenuItem(
+                                    text = { Text("${m}月") },
+                                    onClick = {
+                                        lunarMonth = m.toString()
+                                        expanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Day selector
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "农历日",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = deepGreen
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFF5F5F5))
+                            .border(1.dp, Color(0xFFDDDDDD), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 12.dp)
+                    ) {
+                        var expanded by remember { mutableStateOf(false) }
+                        Box(modifier = Modifier.fillMaxWidth().clickable { expanded = true }) {
+                            Text(
+                                text = "${lunarDay.toIntOrNull() ?: 1}日",
+                                fontSize = 16.sp,
+                                color = deepGreen
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            (1..30).forEach { d ->
+                                DropdownMenuItem(
+                                    text = { Text("${d}日") },
+                                    onClick = {
+                                        lunarDay = d.toString()
+                                        expanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Include leap month toggle
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { includeLeap = !includeLeap }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "闰月也显示此节日",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = deepGreen
+                )
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .border(2.dp, if (includeLeap) deepGreen else Color.Gray, RoundedCornerShape(4.dp))
+                        .background(if (includeLeap) deepGreen else Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (includeLeap) {
+                        Text(text = "✓", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Buttons row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFFE0E0E0))
+                        .clickable(onClick = onDismiss)
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text = "取消", fontSize = 15.sp, color = deepGreen)
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(deepGreen)
+                        .clickable {
+                            val monthVal = lunarMonth.toIntOrNull()?.coerceIn(1, 12) ?: 1
+                            val dayVal = lunarDay.toIntOrNull()?.coerceIn(1, 30) ?: 1
+                            if (name.isNotBlank()) {
+                                val festival = CustomFestivalStorage.CustomFestival(
+                                    id = editingFestival?.id ?: java.util.UUID.randomUUID().toString(),
+                                    lunarMonth = monthVal,
+                                    lunarDay = dayVal,
+                                    name = name.trim(),
+                                    includeLeap = includeLeap
+                                )
+                                onSave(festival)
+                            }
+                        }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text = "保存", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
             }
         }
     }

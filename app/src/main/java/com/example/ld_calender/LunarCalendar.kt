@@ -62,7 +62,7 @@ object LunarCalendar {
         val weekDays = arrayOf("日", "一", "二", "三", "四", "五", "六")
         val cal = GregorianCalendar(year, month - 1, day)
         val weekday = weekDays[cal.get(Calendar.DAY_OF_WEEK) - 1]
-return "${year}年${month}月${day}日 周$weekday"
+        return "${year}年${month}月${day}日 周$weekday"
     }
 
     /**
@@ -192,5 +192,213 @@ return "${year}年${month}月${day}日 周$weekday"
             "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"
         )
         return if (day in 1..30) names[day - 1] else ""
+    }
+
+    // ========== Holidays & Solar Terms ==========
+
+    enum class SpecialDayType { FESTIVAL, SOLAR_TERM }
+
+    data class SpecialDay(val name: String, val type: SpecialDayType)
+
+    /**
+     * Mutable list of user-defined custom lunar festivals.
+     * Set this at app startup from CustomFestivalStorage.
+     */
+    var customFestivals: List<CustomFestivalStorage.CustomFestival> = emptyList()
+
+    /**
+     * Returns list of special days (festivals and solar terms) for the given Gregorian date.
+     */
+    fun getSpecialDays(solarYear: Int, solarMonth: Int, solarDay: Int): List<SpecialDay> {
+        val result = mutableListOf<SpecialDay>()
+
+        // Solar terms
+        val term = getSolarTerm(solarYear, solarMonth, solarDay)
+        if (term != null) {
+            result.add(SpecialDay(term, SpecialDayType.SOLAR_TERM))
+        }
+
+        // Lunar festivals (based on lunar date)
+        val cal = GregorianCalendar(solarYear, solarMonth - 1, solarDay)
+        val lunar = solarToLunar(cal)
+
+        // Custom festivals (user-defined)
+        for (cf in customFestivals) {
+            if (cf.lunarMonth == lunar.month && cf.lunarDay == lunar.day) {
+                // For leap months: only show if includeLeap is true
+                if (!lunar.isLeap || cf.includeLeap) {
+                    result.add(SpecialDay(cf.name, SpecialDayType.FESTIVAL))
+                }
+            }
+        }
+
+        val lunarFestival = getLunarFestival(lunar.month, lunar.day, lunar.isLeap)
+        if (lunarFestival != null) {
+            result.add(SpecialDay(lunarFestival, SpecialDayType.FESTIVAL))
+        }
+
+        // 除夕: last day of 12th lunar month (day 29 or 30, whichever is the last)
+        if (lunar.month == 12 && !lunar.isLeap) {
+            val lastDayOf12thMonth = daysInLunarMonth(lunar.year, 12)
+            if (lunar.day.toLong() == lastDayOf12thMonth) {
+                // Only add if not already set as 春节 (which is 正月初一, not applicable here)
+                if (lunarFestival == null) {
+                    result.add(SpecialDay("除夕", SpecialDayType.FESTIVAL))
+                }
+            }
+        }
+
+        // Gregorian (solar) festivals
+        val solarFestival = getSolarFestival(solarMonth, solarDay)
+        if (solarFestival != null) {
+            result.add(SpecialDay(solarFestival, SpecialDayType.FESTIVAL))
+        }
+
+        // Mother's Day, Father's Day
+        val otherFestival = getVariableFestival(solarYear, solarMonth, solarDay)
+        if (otherFestival != null) {
+            result.add(SpecialDay(otherFestival, SpecialDayType.FESTIVAL))
+        }
+
+        return result
+    }
+
+    /**
+     * Returns a combined special-day text for display, e.g. "春节" or "清明" or "" if none.
+     */
+    fun getSpecialDayText(solarYear: Int, solarMonth: Int, solarDay: Int): String {
+        val specialDays = getSpecialDays(solarYear, solarMonth, solarDay)
+        if (specialDays.isEmpty()) return ""
+
+        // If there's a solar term, prefer showing it; otherwise show first festival
+        val term = specialDays.firstOrNull { it.type == SpecialDayType.SOLAR_TERM }
+        if (term != null) return term.name
+
+        return specialDays.first().name
+    }
+
+    // --- Lunar Festivals (month, day, isLeap) ---
+
+    private fun getLunarFestival(lunarMonth: Int, lunarDay: Int, isLeap: Boolean): String? {
+        if (isLeap) return null // No festivals in leap months
+
+        return when {
+            lunarMonth == 1 && lunarDay == 1 -> "春节"
+            lunarMonth == 1 && lunarDay == 15 -> "元宵节"
+            lunarMonth == 2 && lunarDay == 2 -> "龙抬头"
+            lunarMonth == 5 && lunarDay == 5 -> "端午节"
+            lunarMonth == 7 && lunarDay == 7 -> "七夕"
+            lunarMonth == 7 && lunarDay == 15 -> "中元节"
+            lunarMonth == 8 && lunarDay == 15 -> "中秋节"
+            lunarMonth == 9 && lunarDay == 9 -> "重阳节"
+            lunarMonth == 10 && lunarDay == 1 -> "寒衣节"
+            lunarMonth == 12 && lunarDay == 8 -> "腊八节"
+            lunarMonth == 12 && lunarDay == 23 -> "小年(北)"
+            lunarMonth == 12 && lunarDay == 24 -> "小年(南)"
+            // 除夕: last day of 12th lunar month (29 or 30)
+            // 除夕 is handled in getSpecialDays() using lunar year info
+            else -> null
+        }
+    }
+
+    // --- Gregorian Festivals (month, day) ---
+
+    private fun getSolarFestival(month: Int, day: Int): String? {
+        return when {
+            month == 1 && day == 1 -> "元旦"
+            month == 2 && day == 14 -> "情人节"
+            month == 3 && day == 8 -> "妇女节"
+            month == 3 && day == 12 -> "植树节"
+            month == 4 && day == 1 -> "愚人节"
+            month == 5 && day == 1 -> "劳动节"
+            month == 5 && day == 4 -> "青年节"
+            month == 6 && day == 1 -> "儿童节"
+            month == 7 && day == 1 -> "建党节"
+            month == 8 && day == 1 -> "建军节"
+            month == 9 && day == 10 -> "教师节"
+            month == 10 && day == 1 -> "国庆节"
+            month == 12 && day == 25 -> "圣诞节"
+            else -> null
+        }
+    }
+
+    // --- Variable Festivals (Mother's Day, Father's Day) ---
+
+    private fun getVariableFestival(year: Int, month: Int, day: Int): String? {
+        // Mother's Day: 2nd Sunday of May
+        if (month == 5) {
+            val cal = GregorianCalendar(year, 4, 1) // May 1
+            val firstDow = cal.get(Calendar.DAY_OF_WEEK) // 1=Sunday, 2=Monday, ...
+            val firstSunday = 1 + (8 - firstDow) % 7
+            val secondSunday = firstSunday + 7
+            if (day == secondSunday) return "母亲节"
+        }
+        // Father's Day: 3rd Sunday of June
+        if (month == 6) {
+            val cal = GregorianCalendar(year, 5, 1) // June 1
+            val firstDow = cal.get(Calendar.DAY_OF_WEEK)
+            val firstSunday = 1 + (8 - firstDow) % 7
+            val thirdSunday = firstSunday + 14
+            if (day == thirdSunday) return "父亲节"
+        }
+        return null
+    }
+
+    // --- Solar Term Calculation ---
+
+    private data class SolarTermInfo(val month: Int, val d: Double, val c20: Int, val c21: Int)
+
+    private val solarTermData = listOf(
+        SolarTermInfo(1,  0.2422, 6, 5),   // 1: 小寒
+        SolarTermInfo(1,  0.2422, 21, 20), // 2: 大寒
+        SolarTermInfo(2,  0.2422, 4, 3),   // 3: 立春
+        SolarTermInfo(2,  0.2422, 19, 19), // 4: 雨水
+        SolarTermInfo(3,  0.2422, 6, 6),   // 5: 惊蛰
+        SolarTermInfo(3,  0.2422, 21, 21), // 6: 春分
+        SolarTermInfo(4,  0.2422, 6, 5),   // 7: 清明
+        SolarTermInfo(4,  0.2422, 21, 21), // 8: 谷雨
+        SolarTermInfo(5,  0.2422, 6, 6),   // 9: 立夏
+        SolarTermInfo(5,  0.2422, 22, 22), // 10: 小满
+        SolarTermInfo(6,  0.2422, 6, 6),   // 11: 芒种
+        SolarTermInfo(6,  0.2422, 22, 22), // 12: 夏至
+        SolarTermInfo(7,  0.2422, 8, 8),   // 13: 小暑
+        SolarTermInfo(7,  0.2422, 24, 24), // 14: 大暑
+        SolarTermInfo(8,  0.2422, 8, 8),   // 15: 立秋
+        SolarTermInfo(8,  0.2422, 24, 24), // 16: 处暑
+        SolarTermInfo(9,  0.2422, 8, 8),   // 17: 白露
+        SolarTermInfo(9,  0.2422, 24, 24), // 18: 秋分
+        SolarTermInfo(10, 0.2422, 9, 9),   // 19: 寒露
+        SolarTermInfo(10, 0.2422, 24, 24), // 20: 霜降
+        SolarTermInfo(11, 0.2422, 8, 8),   // 21: 立冬
+        SolarTermInfo(11, 0.2422, 23, 23), // 22: 小雪
+        SolarTermInfo(12, 0.2422, 8, 8),   // 23: 大雪
+        SolarTermInfo(12, 0.2422, 22, 23), // 24: 冬至
+    )
+
+    private val solarTermNames = listOf(
+        "小寒", "大寒", "立春", "雨水", "惊蛰", "春分",
+        "清明", "谷雨", "立夏", "小满", "芒种", "夏至",
+        "小暑", "大暑", "立秋", "处暑", "白露", "秋分",
+        "寒露", "霜降", "立冬", "小雪", "大雪", "冬至"
+    )
+
+    /**
+     * Returns the solar term name for the given Gregorian date, or null if none.
+     */
+    private fun getSolarTerm(year: Int, month: Int, day: Int): String? {
+        val y = if (year >= 2000) year - 2000 else year - 1900
+        val is21c = year >= 2000
+
+        for (i in solarTermData.indices) {
+            val info = solarTermData[i]
+            if (info.month != month) continue
+
+            val c = if (is21c) info.c21 else info.c20
+            val expectedDay = (y * info.d + c).toInt() - y / 4
+            if (expectedDay == day) {
+                return solarTermNames[i]
+            }
+        }
+        return null
     }
 }
