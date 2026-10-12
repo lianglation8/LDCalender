@@ -43,6 +43,15 @@ object LunarCalendar {
     )
 
     /**
+     * Returns the lunar date for the given Gregorian date.
+     * Exposes solarToLunar so other modules (e.g. LaoHuangLi) can use lunar month/day.
+     */
+    fun getLunarDate(year: Int, month: Int, day: Int): LunarDate {
+        val cal = GregorianCalendar(year, month - 1, day)
+        return solarToLunar(cal)
+    }
+
+    /**
      * Returns the Chinese lunar date string for the given Gregorian date.
      * e.g. "农历乙巳年六月初六"
      */
@@ -171,7 +180,11 @@ object LunarCalendar {
         return if ((lunarInfo[year - 1900] and (0x8000L shr (month - 1))) != 0L) 30 else 29
     }
 
-    private fun getYearName(year: Int): String {
+    /**
+     * Returns the 干支 (Heavenly Stem & Earthly Branch) name of a lunar year.
+     * e.g. 2025 (乙巳年) -> "乙巳". NOTE: lunar-year boundary, not 立春 boundary.
+     */
+    fun getYearName(year: Int): String {
         val g = gan[(year - 4) % 10]
         val z = zhi[(year - 4) % 12]
         return "$g$z"

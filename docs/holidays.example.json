@@ -1,0 +1,16 @@
+{
+  "2025": [
+    { "name": "元旦", "type": "holiday", "date": "2025-01-01" },
+    { "name": "春节", "type": "holiday", "from": "2025-01-28", "to": "2025-02-04" },
+    { "name": "春节调休", "type": "workday", "date": "2025-01-26" },
+    { "name": "春节调休", "type": "workday", "date": "2025-02-08" },
+    { "name": "清明节", "type": "holiday", "from": "2025-04-04", "to": "2025-04-06" },
+    { "name": "劳动节", "type": "holiday", "from": "2025-05-01", "to": "2025-05-05" },
+    { "name": "劳动节调休", "type": "workday", "date": "2025-04-27" },
+    { "name": "劳动节调休", "type": "workday", "date": "2025-05-10" },
+    { "name": "端午节", "type": "holiday", "from": "2025-05-31", "to": "2025-06-02" },
+    { "name": "国庆节", "type": "holiday", "from": "2025-10-01", "to": "2025-10-08" },
+    { "name": "国庆节调休", "type": "workday", "date": "2025-09-28" },
+    { "name": "国庆节调休", "type": "workday", "date": "2025-10-11" }
+  ]
+}

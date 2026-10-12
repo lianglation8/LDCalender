@@ -10,3 +10,4 @@
 local.properties
 __pycache__/
 create_repo.ps1
+errlog*.txt

@@ -6,6 +6,9 @@
         tools:ignore="ScopedStorage"
         android:maxSdkVersion="28" />
 
+    <!-- 联网拉取国家法定节假日数据（HolidayStorage） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:hasFragileUserData="true"
         android:allowBackup="true"

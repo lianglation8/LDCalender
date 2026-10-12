@@ -14,8 +14,9 @@ android {
         applicationId = "com.example.ld_calender"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        // 1.0.0 正式版前的最终测试版：后续计划在黄历位/开屏等处接入广告后发布 1.0.0 正式版
+        versionName = "1.0.0-beta"
     }
 
     signingConfigs {

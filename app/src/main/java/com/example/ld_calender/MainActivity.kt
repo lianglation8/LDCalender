@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,48 +25,58 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,8 +88,20 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            LDCalenderTheme {
-                CalendarApp()
+            var appColors by remember { mutableStateOf(ColorSettings.load(applicationContext)) }
+            CompositionLocalProvider(LocalAppColors provides appColors) {
+                LDCalenderTheme {
+                    CalendarApp(
+                        onFontColorChange = { newColor ->
+                            appColors = appColors.copy(fontColor = newColor)
+                            ColorSettings.save(applicationContext, appColors)
+                        },
+                        onBgColorChange = { newColor ->
+                            appColors = appColors.copy(bgColor = newColor)
+                            ColorSettings.save(applicationContext, appColors)
+                        }
+                    )
+                }
             }
         }
     }
@@ -95,7 +118,10 @@ private data class NavContentState(
 )
 
 @Composable
-fun CalendarApp() {
+fun CalendarApp(
+    onFontColorChange: (Color) -> Unit = {},
+    onBgColorChange: (Color) -> Unit = {}
+) {
     val today = Calendar.getInstance()
     val currentYear = today.get(Calendar.YEAR)
     val currentMonth = today.get(Calendar.MONTH) + 1
@@ -111,6 +137,12 @@ fun CalendarApp() {
     var showCustomFestivals by remember { mutableStateOf(false) }
     var weekStartMonday by remember { mutableStateOf(true) } // true=周一, false=周日
     var reverseArrowDirection by remember { mutableStateOf(false) } // true=交换左右箭头功能
+    var showFontColorPicker by remember { mutableStateOf(false) }
+    var showBgColorPicker by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
+    var showPrivacy by remember { mutableStateOf(false) }
+    var showTechGuide by remember { mutableStateOf(false) }
+    var showHuangLi by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     PlanStorage.initialize(context)
@@ -118,6 +150,13 @@ fun CalendarApp() {
     var customFestivals by remember { mutableStateOf(CustomFestivalStorage.loadAll(context)) }
     LaunchedEffect(Unit) {
         LunarCalendar.customFestivals = customFestivals
+    }
+    // 国家法定节假日：先同步读缓存（离线可用），再后台联网刷新
+    var holidayEntries by remember { mutableStateOf(HolidayStorage.loadCached(context)) }
+    LaunchedEffect(Unit) {
+        HolidayStorage.refresh(context) { fresh ->
+            holidayEntries = fresh
+        }
     }
     fun dateKey(y: Int, m: Int, d: Int) = "${y}-${String.format("%02d", m)}-${String.format("%02d", d)}"
     val currentKey = dateKey(selectedYear, selectedMonth, selectedDay)
@@ -216,23 +255,47 @@ fun CalendarApp() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .pointerInput(Unit) {
-                    var totalDrag = 0f
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            if (totalDrag < -100f) {
-                                navigateNext()
-                            } else if (totalDrag > 100f) {
-                                navigatePrev()
-                            }
-                            totalDrag = 0f
-                        },
-                        onHorizontalDrag = { _, dragAmount ->
-                            totalDrag += dragAmount
-                        }
-                    )
-                }
         ) {
+            // When any full-screen overlay is open, the main calendar content
+            // is removed from the composition entirely. This guarantees the
+            // overlay is the ONLY thing on screen and no overlap/ghosting of
+            // the calendar underneath can ever occur.
+            val anyOverlayOpen = showYearPicker || showSettings ||
+                    showFontColorPicker || showBgColorPicker || showCustomFestivals ||
+                    showAbout || showPrivacy || showTechGuide || showHuangLi
+            if (!anyOverlayOpen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        var totalDrag = 0f
+                        var triggered = false
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                // 拖动过程中已即时触发切换，松手时仅重置状态
+                                totalDrag = 0f
+                                triggered = false
+                            },
+                            onDragCancel = {
+                                totalDrag = 0f
+                                triggered = false
+                            },
+                            onHorizontalDrag = { _, dragAmount ->
+                                totalDrag += dragAmount
+                                // 拖动过程中：累计位移超过 50f 立即切换（跟手反馈），一次手势仅触发一次
+                                if (!triggered) {
+                                    if (totalDrag < -50f) {
+                                        triggered = true
+                                        navigateNext()
+                                    } else if (totalDrag > 50f) {
+                                        triggered = true
+                                        navigatePrev()
+                                    }
+                                }
+                            }
+                        )
+                    }
+            ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -250,10 +313,11 @@ fun CalendarApp() {
                             (fadeIn() togetherWith fadeOut()).using(SizeTransform(clip = false))
                         } else {
                             // Same mode: horizontal slide, direction follows setting/arrow
+                            // 220ms 动画让滑动切换更轻快灵敏
                             if (dir > 0) {
-                                (slideInHorizontally { it } togetherWith slideOutHorizontally { -it })
+                                (slideInHorizontally(animationSpec = tween(220)) { it } togetherWith slideOutHorizontally(animationSpec = tween(220)) { -it })
                             } else {
-                                (slideInHorizontally { -it } togetherWith slideOutHorizontally { it })
+                                (slideInHorizontally(animationSpec = tween(220)) { -it } togetherWith slideOutHorizontally(animationSpec = tween(220)) { it })
                             }
                         }
                     },
@@ -267,15 +331,15 @@ fun CalendarApp() {
                         ViewMode.YEAR -> {
                             Column(modifier = Modifier.fillMaxSize()) {
                                 // Fixed year title
-                                val deepGreen = Color(0xFF2E7D32)
+                                val deepGreen = appFontColor()
                                 Column(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(16.dp))
-                                            .background(Color(0xFFD4EDDA), RoundedCornerShape(16.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(appFontColor().copy(alpha = 0.15f), RoundedCornerShape(16.dp))
                                             .clickable { showYearPicker = true }
                                             .padding(horizontal = 24.dp, vertical = 8.dp),
                                         contentAlignment = Alignment.Center
@@ -318,6 +382,7 @@ fun CalendarApp() {
                                     currentMonth = currentMonth,
                                     currentYear = currentYear,
                                     weekStartMonday = weekStartMonday,
+                                    holidayEntries = holidayEntries,
                                     onDayClick = { m, d ->
                                         selectedMonth = m
                                         selectedDay = d
@@ -341,6 +406,7 @@ fun CalendarApp() {
                                     currentMonth = currentMonth,
                                     currentDay = currentDay,
                                     weekStartMonday = weekStartMonday,
+                                    holidayEntries = holidayEntries,
                                     onDayClick = { d ->
                                         selectedDay = d
                                         viewMode = ViewMode.DAY
@@ -364,6 +430,7 @@ fun CalendarApp() {
                                     currentMonth = currentMonth,
                                     currentDay = currentDay,
                                     weekStartMonday = weekStartMonday,
+                                    holidayEntries = holidayEntries,
                                     onDayClick = { y, m, d ->
                                         selectedYear = y
                                         selectedMonth = m
@@ -401,6 +468,7 @@ fun CalendarApp() {
                                             weekdayChinese = weekdayChinese,
                                             lunarString = lunarString,
                                             specialDayText = specialDayText,
+                                            holidayTag = HolidayStorage.getHolidayTag(holidayEntries, year, month, day),
                                             planText = planText,
                                             onPlanTextChange = { newText ->
                                                 planText = newText
@@ -416,12 +484,16 @@ fun CalendarApp() {
 
                                 // Plan management row
                                 PlanManagementRow(
+                                    year = year,
+                                    month = month,
+                                    day = day,
                                     hasPlan = planText.isNotEmpty(),
                                     onExport = { /* TODO */ },
                                     onDelete = {
                                         PlanStorage.deletePlan(context, keyForDay)
                                         planText = ""
                                     },
+                                    onClick = { showHuangLi = true },
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
@@ -448,6 +520,8 @@ fun CalendarApp() {
                     modifier = Modifier.fillMaxWidth()
                 )
             } // end Column
+            } // end guarded content Box
+            } // end if (!anyOverlayOpen)
 
         // Year Picker Dialog (full-screen overlay)
         if (showYearPicker) {
@@ -469,24 +543,131 @@ fun CalendarApp() {
                 onWeekStartChange = { weekStartMonday = it },
                 reverseArrows = reverseArrowDirection,
                 onReverseArrowsChange = { reverseArrowDirection = it },
-                onCustomFestivalsClick = { showCustomFestivals = true },
+                onCustomFestivalsClick = {
+                    // Switch to the custom festivals page (settings page is hidden to avoid overlap)
+                    showSettings = false
+                    showCustomFestivals = true
+                },
+                onAboutClick = {
+                    // Switch to the about page (settings page is hidden to avoid overlap)
+                    showSettings = false
+                    showAbout = true
+                },
+                onTechGuideClick = {
+                    // Switch to the tech guide page (settings page is hidden to avoid overlap)
+                    showSettings = false
+                    showTechGuide = true
+                },
+                onPrivacyClick = {
+                    // Switch to the privacy page (settings page is hidden to avoid overlap)
+                    showSettings = false
+                    showPrivacy = true
+                },
+                onFontColorClick = {
+                    // Switch to the font-color page (settings page is hidden to avoid overlap)
+                    showSettings = false
+                    showFontColorPicker = true
+                },
+                onBgColorClick = {
+                    // Switch to the bg-color page (settings page is hidden to avoid overlap)
+                    showSettings = false
+                    showBgColorPicker = true
+                },
                 onDismiss = { showSettings = false }
             )
         }
 
-        // Custom Festival Management Dialog (full-screen overlay)
+        // Color Picker Pages (full-screen, mutually exclusive with the settings page
+        // so only one full-screen overlay is shown at a time)
+        if (showFontColorPicker) {
+            ColorPickerPage(
+                title = "选择字体颜色",
+                initialColor = appFontColor(),
+                defaultColor = Color(ColorSettings.DEFAULT_FONT_COLOR),
+                onColorSelected = { color ->
+                    onFontColorChange(color)
+                    showFontColorPicker = false
+                    showSettings = true
+                },
+                onDismiss = {
+                    showFontColorPicker = false
+                    showSettings = true
+                }
+            )
+        }
+        if (showBgColorPicker) {
+            ColorPickerPage(
+                title = "选择背景颜色",
+                initialColor = appBgColor(),
+                defaultColor = Color(ColorSettings.DEFAULT_BG_COLOR),
+                onColorSelected = { color ->
+                    onBgColorChange(color)
+                    showBgColorPicker = false
+                    showSettings = true
+                },
+                onDismiss = {
+                    showBgColorPicker = false
+                    showSettings = true
+                }
+            )
+        }
+
+        // Custom Festivals page (full-screen)
         if (showCustomFestivals) {
             CustomFestivalDialog(
                 onReload = {
                     customFestivals = CustomFestivalStorage.loadAll(context)
                     LunarCalendar.customFestivals = customFestivals
                 },
-                onDismiss = { showCustomFestivals = false }
+                onDismiss = {
+                    showCustomFestivals = false
+                    showSettings = true
+                }
             )
         }
-    } // end Box
-    }
-}
+
+        // Privacy & Permissions page (full-screen)
+        if (showPrivacy) {
+            PrivacyDialog(
+                onDismiss = {
+                    showPrivacy = false
+                    showSettings = true
+                }
+            )
+        }
+
+        // About page (full-screen)
+        if (showAbout) {
+            AboutDialog(
+                onDismiss = {
+                    showAbout = false
+                    showSettings = true
+                }
+            )
+        }
+
+        // Tech Guide page (full-screen)
+        if (showTechGuide) {
+            TechGuideDialog(
+                onDismiss = {
+                    showTechGuide = false
+                    showSettings = true
+                }
+            )
+        }
+
+        // Huang-Li detail page (full-screen) triggered by single-tapping the ad placeholder
+        if (showHuangLi) {
+            HuangLiDialog(
+                year = selectedYear,
+                month = selectedMonth,
+                day = selectedDay,
+                onDismiss = { showHuangLi = false }
+            )
+        }
+    } // end full-screen Box
+} // end Scaffold content
+} // end CalendarApp
 
 // ========== YEAR VIEW ==========
 
@@ -496,6 +677,7 @@ fun YearView(
     currentMonth: Int,
     currentYear: Int,
     weekStartMonday: Boolean,
+    holidayEntries: List<HolidayStorage.HolidayEntry>,
     onDayClick: (Int, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -523,6 +705,7 @@ fun YearView(
                 month = month,
                 isCurrentMonth = (year == currentYear && month == currentMonth),
                 weekStartMonday = weekStartMonday,
+                holidayEntries = holidayEntries,
                 onDayClick = { day -> onDayClick(month, day) }
             )
         }
@@ -535,11 +718,12 @@ fun MonthCard(
     month: Int,
     isCurrentMonth: Boolean,
     weekStartMonday: Boolean,
+    holidayEntries: List<HolidayStorage.HolidayEntry>,
     onDayClick: (Int) -> Unit
 ) {
     val shape = RoundedCornerShape(20.dp)
-    val cardBg = if (isCurrentMonth) Color(0xFFE8F5E9) else Color(0xFFF7F8FA)
-    val deepGreen = Color(0xFF2E7D32)
+    val cardBg = if (isCurrentMonth) appBgColor().copy(alpha = 0.35f) else appBgColor()
+    val deepGreen = appFontColor()
     val borderColor = if (isCurrentMonth) deepGreen else Color(0xFFDDDDDD)
 
     Box(
@@ -566,13 +750,20 @@ fun MonthCard(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Mini calendar grid for this month
-            MiniMonthGrid(year = year, month = month, deepGreen = deepGreen, weekStartMonday = weekStartMonday, onDayClick = onDayClick)
+            MiniMonthGrid(year = year, month = month, deepGreen = deepGreen, weekStartMonday = weekStartMonday, holidayEntries = holidayEntries, onDayClick = onDayClick)
         }
     }
 }
 
 @Composable
-fun MiniMonthGrid(year: Int, month: Int, deepGreen: Color, weekStartMonday: Boolean, onDayClick: (Int) -> Unit = {}) {
+fun MiniMonthGrid(
+    year: Int,
+    month: Int,
+    deepGreen: Color,
+    weekStartMonday: Boolean,
+    holidayEntries: List<HolidayStorage.HolidayEntry>,
+    onDayClick: (Int) -> Unit = {}
+) {
     val cal = Calendar.getInstance()
     cal.set(year, month - 1, 1)
     val firstDayOfWeek = cal.get(Calendar.DAY_OF_WEEK) // Sunday=1 Monday=2 ... Saturday=7
@@ -618,14 +809,29 @@ fun MiniMonthGrid(year: Int, month: Int, deepGreen: Color, weekStartMonday: Bool
                         contentAlignment = Alignment.Center
                     ) {
                         if (cell != null) {
-                            Text(
-                                text = cell.toString(),
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = deepGreen,
-                                textAlign = TextAlign.Center,
+                            val holidayTag = HolidayStorage.getHolidayTag(holidayEntries, year, month, cell)
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
                                 modifier = Modifier.clickable { onDayClick(cell) }
-                            )
+                            ) {
+                                Text(
+                                    text = cell.toString(),
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = deepGreen,
+                                    textAlign = TextAlign.Center
+                                )
+                                if (holidayTag != null) {
+                                    Text(
+                                        text = holidayTag,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (holidayTag == "班") Color(0xFFE65100) else Color(0xFFC62828),
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -647,6 +853,7 @@ private fun AutoFitText(
     color: Color,
     fontWeight: FontWeight,
     minFontSize: TextUnit = 12.sp,
+    lineHeight: TextUnit = TextUnit.Unspecified,
     modifier: Modifier = Modifier
 ) {
     var availableWidthPx by remember { mutableStateOf(Int.MAX_VALUE) }
@@ -674,12 +881,44 @@ private fun AutoFitText(
         Text(
             text = text,
             fontSize = sizeSp.sp,
+            lineHeight = lineHeight,
             color = color,
             fontWeight = fontWeight,
             textAlign = TextAlign.Center,
             maxLines = 1,
-            softWrap = false
+            softWrap = false,
+            style = TextStyle(lineHeightStyle = CardLineHeightStyle)
         )
+    }
+}
+
+/**
+ * 将设计尺寸(dp)转换为不受系统"字体大小"设置影响的 sp：渲染像素 = size.dp × density，
+ * 与 fontScale 无关。用于日视图卡片，使卡片版式在不同设备
+ * (不同系统字体缩放、厂商字体)上保持与模拟器一致。
+ */
+@Composable
+private fun designSp(size: Dp): TextUnit = with(LocalDensity.current) { size.toSp() }
+
+/** 卡片文本使用的行高样式：裁掉首行顶部与末行底部多余空间，使文本盒高度等于行高 */
+private val CardLineHeightStyle = LineHeightStyle(
+    alignment = LineHeightStyle.Alignment.Center,
+    trim = LineHeightStyle.Trim.Both
+)
+
+/**
+ * 固定高度的垂直居中修饰符：子项以不受限的高度测量(得到其自然行盒高度)，
+ * 然后在给定的 dp 高度内垂直居中放置。
+ * 行盒占用高度完全由该 dp 值决定，与字体度量、系统行距行为无关，
+ * 确保 MIUI(MiSans 等高行盒字体)设备上的版式与模拟器一致。
+ */
+private fun Modifier.fixedHeightCentered(height: Dp): Modifier = layout { measurable, constraints ->
+    val placeable = measurable.measure(
+        constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity)
+    )
+    val hPx = height.roundToPx()
+    layout(placeable.width, hPx) {
+        placeable.placeRelative(0, (hPx - placeable.height) / 2)
     }
 }
 
@@ -691,14 +930,15 @@ fun CurvedCalendarCard(
     weekdayChinese: String,
     lunarString: String,
     specialDayText: String,
+    holidayTag: String?,
     planText: String,
     onPlanTextChange: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(28.dp)
-    val cardBg = Color(0xFFF7F8FA)
-    val deepGreen = Color(0xFF2E7D32)
-    val weekdayBg = Color(0xFFD4EDDA) // light green
+    val cardBg = appBgColor()
+    val deepGreen = appFontColor()
+    val weekdayBg = appFontColor().copy(alpha = 0.15f)
 
     Box(
         modifier = modifier
@@ -709,128 +949,169 @@ fun CurvedCalendarCard(
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
-            // Row 1: Year + Month
+            // Upper section: fixed share of the card (1.05 of 1.6 total weight,
+            // same as before). All vertical gaps between the year/month, day
+            // number, weekday, lunar and festival rows are distributed evenly
+            // through equal weighted Spacers.
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.15f)
-                    .padding(horizontal = 28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .weight(1.05f)
             ) {
-                Text(
-                    text = "${year}年${month}月",
-                    fontSize = 42.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = deepGreen,
-                    textAlign = TextAlign.Center
-                )
-            }
-            // Row 2: Day number
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.45f)
-                    .offset(y = (-10).dp)
-                    .padding(horizontal = 28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = day.toString(),
-                    fontSize = 130.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = deepGreen,
-                    textAlign = TextAlign.Center
-                )
-            }
-            // Row 3: Weekday badge
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.2f)
-                    .offset(y = (-25).dp)
-                    .padding(horizontal = 28.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .background(weekdayBg, RoundedCornerShape(12.dp))
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "周$weekdayChinese",
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Color(0xFF2D6A4F),
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-            // Row 4: Lunar date (font auto-shrinks to fit available width)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.15f)
-                    .offset(y = (-25).dp)
-                    .padding(horizontal = 28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                AutoFitText(
-                    text = lunarString,
-                    baseFontSize = 30.sp,
-                    color = deepGreen,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            // Row 4.5: Special day (solar term / festival)
-            if (specialDayText.isNotEmpty()) {
+                // Row 1: Year + Month
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(0.1f)
-                        .offset(y = (-25).dp)
                         .padding(horizontal = 28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    val specialDays = LunarCalendar.getSpecialDays(year, month, day)
+                    Text(
+                        text = "${year}年${month}月",
+                        modifier = Modifier.fixedHeightCentered(50.dp),
+                        fontSize = designSp(42.dp),
+                        lineHeight = designSp(50.dp),
+                        fontWeight = FontWeight.Bold,
+                        color = deepGreen,
+                        textAlign = TextAlign.Center,
+                        style = TextStyle(lineHeightStyle = CardLineHeightStyle)
+                    )
+                }
 
-                    // Adaptive badge row: shrinks font when multiple badges overflow
-                    var badgeRowWidthPx by remember { mutableStateOf(Int.MAX_VALUE) }
-                    val density = LocalDensity.current
-                    val fontScale = density.fontScale
-                    val densityFactor = density.density
-                    // Available width: first frame uses base size, onSizeChanged fills in real px width
-                    val availPx = badgeRowWidthPx.toFloat()
-                    // Fixed overhead per badge: horizontal padding 20dp + badge margin 8dp
-                    val fixedPx = 28.dp.value * densityFactor * specialDays.size
-                    // Base 18.sp -> px (per full-width char)
-                    val basePx = 18 * fontScale * densityFactor
-                    // Estimated total text width: CJK = 1.0em, half-width chars = 0.6em
-                    val charsWidth = specialDays.sumOf { sd ->
-                        sd.name.sumOf { ch -> if (ch.code > 0xFF) 1.0 else 0.6 }
-                    }.toFloat().coerceAtLeast(1f)
-                    val minPx = 10 * fontScale * densityFactor
-                    // Shrink font if badges would overflow the available width (10% safety)
-                    val sizePx = if (fixedPx + basePx * charsWidth * 1.1f > availPx) {
-                        ((availPx - fixedPx) / (charsWidth * 1.1f)).coerceAtLeast(minPx)
-                    } else {
-                        basePx
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Row 2: Day number
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = day.toString(),
+                        modifier = Modifier.fixedHeightCentered(130.dp),
+                        fontSize = designSp(130.dp),
+                        lineHeight = designSp(130.dp),
+                        fontWeight = FontWeight.Bold,
+                        color = deepGreen,
+                        textAlign = TextAlign.Center,
+                        style = TextStyle(
+                            platformStyle = PlatformTextStyle(includeFontPadding = false),
+                            lineHeightStyle = CardLineHeightStyle
+                        )
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+                // Row 3: Weekday badge (+ optional holiday tag "休"/"班")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 28.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(weekdayBg, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "周$weekdayChinese",
+                            modifier = Modifier.fixedHeightCentered(34.dp),
+                            fontSize = designSp(28.dp),
+                            lineHeight = designSp(34.dp),
+                            fontWeight = FontWeight.Medium,
+                            color = appFontColor(),
+                            textAlign = TextAlign.Center,
+                            style = TextStyle(lineHeightStyle = CardLineHeightStyle)
+                        )
                     }
-                    val sizeSp = sizePx / (fontScale * densityFactor)
+                    if (holidayTag != null) {
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (holidayTag == "班") Color(0xFFFFF3E0) else Color(0xFFFFE0E0),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = holidayTag,
+                                modifier = Modifier.fixedHeightCentered(34.dp),
+                                fontSize = designSp(28.dp),
+                                lineHeight = designSp(34.dp),
+                                fontWeight = FontWeight.Bold,
+                                color = if (holidayTag == "班") Color(0xFFE65100) else Color(0xFFC62828),
+                                textAlign = TextAlign.Center,
+                                style = TextStyle(lineHeightStyle = CardLineHeightStyle)
+                            )
+                        }
+                    }
+                }
 
-                    Row(
+                Spacer(modifier = Modifier.weight(1f))
+                // Row 4: Lunar date (font auto-shrinks to fit available width)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    AutoFitText(
+                        text = lunarString,
+                        baseFontSize = designSp(30.dp),
+                        lineHeight = designSp(36.dp),
+                        color = deepGreen,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.fillMaxWidth().fixedHeightCentered(36.dp)
+                    )
+                }
+                if (specialDayText.isNotEmpty()) {
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    // Row 4.5: Special day (solar term / festival)
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .onSizeChanged { badgeRowWidthPx = it.width },
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        val specialDays = LunarCalendar.getSpecialDays(year, month, day)
+
+                        // Adaptive badge row: shrinks font when multiple badges overflow
+                        var badgeRowWidthPx by remember { mutableStateOf(Int.MAX_VALUE) }
+                        val density = LocalDensity.current
+                        val fontScale = density.fontScale
+                        val densityFactor = density.density
+                        // Available width: first frame uses base size, onSizeChanged fills in real px width
+                        val availPx = badgeRowWidthPx.toFloat()
+                        // Fixed overhead per badge: horizontal padding 20dp + badge margin 8dp
+                        val fixedPx = 28.dp.value * densityFactor * specialDays.size
+                        // Base 30dp-equivalent (same as the lunar row) -> px (per full-width char)
+                        val basePx = 30 * densityFactor
+                        // Estimated total text width: CJK = 1.0em, half-width chars = 0.6em
+                        val charsWidth = specialDays.sumOf { sd ->
+                            sd.name.sumOf { ch -> if (ch.code > 0xFF) 1.0 else 0.6 }
+                        }.toFloat().coerceAtLeast(1f)
+                        val minPx = 10 * densityFactor
+                        // Shrink font if badges would overflow the available width (10% safety)
+                        val sizePx = if (fixedPx + basePx * charsWidth * 1.1f > availPx) {
+                            ((availPx - fixedPx) / (charsWidth * 1.1f)).coerceAtLeast(minPx)
+                        } else {
+                            basePx
+                        }
+                        val sizeSp = sizePx / (fontScale * densityFactor)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onSizeChanged { badgeRowWidthPx = it.width },
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             specialDays.forEach { sd ->
                                 val isTerm = sd.type == LunarCalendar.SpecialDayType.SOLAR_TERM
                                 val bg = if (isTerm) Color(0xFFFFF3E0) else Color(0xFFFFE0E0)
@@ -844,7 +1125,9 @@ fun CurvedCalendarCard(
                                 ) {
                                     Text(
                                         text = sd.name,
+                                        modifier = Modifier.fixedHeightCentered(36.dp),
                                         fontSize = sizeSp.sp,
+                                        lineHeight = designSp(36.dp),
                                         fontWeight = FontWeight.Bold,
                                         color = textColor,
                                         textAlign = TextAlign.Center,
@@ -855,21 +1138,22 @@ fun CurvedCalendarCard(
                                             fontWeight = FontWeight.Bold,
                                             color = textColor,
                                             textAlign = TextAlign.Center,
-                                            platformStyle = PlatformTextStyle(includeFontPadding = false)
+                                            platformStyle = PlatformTextStyle(includeFontPadding = false),
+                                            lineHeightStyle = CardLineHeightStyle
                                         )
                                     )
                                 }
                             }
                         }
                     }
-            } else {
-                // Spacer to keep layout consistent
-                Spacer(modifier = Modifier.height(0.dp).weight(0.1f).offset(y = (-20).dp))
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
             }
 
             // Divider
             HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 24.dp).offset(y = (-10).dp),
+                modifier = Modifier.padding(horizontal = 24.dp),
                 thickness = 1.dp,
                 color = deepGreen
             )
@@ -879,17 +1163,9 @@ fun CurvedCalendarCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.55f)
-                    .offset(y = (-10).dp)
                     .padding(horizontal = 24.dp)
                     .padding(top = 16.dp, bottom = 16.dp)
             ) {
-                Text(
-                    text = "今日计划",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = deepGreen
-                )
-                Spacer(modifier = Modifier.height(12.dp))
                 BasicTextField(
                     value = planText,
                     onValueChange = onPlanTextChange,
@@ -928,6 +1204,50 @@ fun CurvedCalendarCard(
     }
 }
 
+// ========== TRIANGLE ICON ==========
+
+private enum class TriangleDirection { LEFT, RIGHT }
+
+/**
+ * 实心等边三角形图标，用于替代 Material 默认的细线条箭头图标。
+ * 三角形严格等边：边长 = 0.8 * canvasSize，高 ≈ 0.69282 * canvasSize。
+ */
+@Composable
+private fun TriangleIcon(
+    direction: TriangleDirection,
+    tint: Color,
+    contentDescription: String,
+    modifier: Modifier = Modifier
+) {
+    Canvas(
+        modifier = modifier.semantics { this.contentDescription = contentDescription }
+    ) {
+        val sizePx = size.minDimension
+        val path = Path().apply {
+            when (direction) {
+                TriangleDirection.RIGHT -> {
+                    // 右顶点 (0.9, 0.5)
+                    moveTo(sizePx * 0.9f, sizePx * 0.5f)
+                    // 左上 (0.9 - 0.69282, 0.1)
+                    lineTo(sizePx * 0.20718f, sizePx * 0.1f)
+                    // 左下 (0.9 - 0.69282, 0.9)
+                    lineTo(sizePx * 0.20718f, sizePx * 0.9f)
+                }
+                TriangleDirection.LEFT -> {
+                    // 左顶点 (0.1, 0.5)
+                    moveTo(sizePx * 0.1f, sizePx * 0.5f)
+                    // 右上 (0.1 + 0.69282, 0.1)
+                    lineTo(sizePx * 0.79282f, sizePx * 0.1f)
+                    // 右下 (0.1 + 0.69282, 0.9)
+                    lineTo(sizePx * 0.79282f, sizePx * 0.9f)
+                }
+            }
+            close()
+        }
+        drawPath(path = path, color = tint)
+    }
+}
+
 // ========== BOTTOM CONTROL BAR ==========
 
 @Composable
@@ -945,64 +1265,94 @@ fun BottomControlBar(
         modifier = modifier
             .height(56.dp)
             .padding(start = 0.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left: left arrow
-        IconButton(onClick = if (reverseArrows) onPrevious else onNext) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+        // 7 buttons, each occupies an equal-width cell (weight = 1f),
+        // so they are evenly distributed across the screen width on all devices.
+        // Left arrow (solid equilateral triangle)
+        BottomBarIconButton(
+            onClick = if (reverseArrows) onPrevious else onNext,
+            modifier = Modifier.weight(1f)
+        ) {
+            TriangleIcon(
+                direction = TriangleDirection.LEFT,
+                tint = appFontColor(),
                 contentDescription = if (reverseArrows) "上一天" else "下一天",
-                tint = Color(0xFF666666),
                 modifier = Modifier.size(26.dp)
             )
         }
 
-        // Center: right arrow
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
+        // Right arrow (solid equilateral triangle)
+        BottomBarIconButton(
+            onClick = if (reverseArrows) onNext else onPrevious,
+            modifier = Modifier.weight(1f)
         ) {
-            IconButton(onClick = if (reverseArrows) onNext else onPrevious) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = if (reverseArrows) "下一天" else "上一天",
-                    tint = Color(0xFF666666),
-                    modifier = Modifier.size(26.dp)
-                )
-            }
-        }
-
-        // Gear icon for settings
-        IconButton(onClick = onSettingsClick) {
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = "设置",
-                tint = Color(0xFF888888),
-                modifier = Modifier.size(22.dp)
+            TriangleIcon(
+                direction = TriangleDirection.RIGHT,
+                tint = appFontColor(),
+                contentDescription = if (reverseArrows) "下一天" else "上一天",
+                modifier = Modifier.size(26.dp)
             )
         }
 
-        Spacer(modifier = Modifier.weight(1f))
-
-        // View mode buttons
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.End
+        // Settings button using the launcher icon (same bitmap as the desktop icon,
+        // so the logo renders exactly as it does on the desktop launcher)
+        BottomBarIconButton(
+            onClick = onSettingsClick,
+            modifier = Modifier.weight(1f)
         ) {
-            ViewModeButton("年", viewMode == ViewMode.YEAR,
-                onClick = { onViewModeChange(ViewMode.YEAR) },
-                onLongClick = onLongPress)
-            ViewModeButton("月", viewMode == ViewMode.MONTH,
-                onClick = { onViewModeChange(ViewMode.MONTH) },
-                onLongClick = onLongPress)
-            ViewModeButton("周", viewMode == ViewMode.WEEK,
-                onClick = { onViewModeChange(ViewMode.WEEK) },
-                onLongClick = onLongPress)
-            ViewModeButton("日", viewMode == ViewMode.DAY,
-                onClick = { onViewModeChange(ViewMode.DAY) },
-                onLongClick = onLongPress)
+            Image(
+                painter = painterResource(id = R.mipmap.ic_launcher),
+                contentDescription = "设置",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(1.dp, Color(0xFFE8E8E8), RoundedCornerShape(8.dp))
+            )
         }
+
+        // View mode buttons (long press jumps to today)
+        ViewModeButton("年", viewMode == ViewMode.YEAR,
+            onClick = { onViewModeChange(ViewMode.YEAR) },
+            onLongClick = onLongPress,
+            modifier = Modifier.weight(1f))
+        ViewModeButton("月", viewMode == ViewMode.MONTH,
+            onClick = { onViewModeChange(ViewMode.MONTH) },
+            onLongClick = onLongPress,
+            modifier = Modifier.weight(1f))
+        ViewModeButton("周", viewMode == ViewMode.WEEK,
+            onClick = { onViewModeChange(ViewMode.WEEK) },
+            onLongClick = onLongPress,
+            modifier = Modifier.weight(1f))
+        ViewModeButton("日", viewMode == ViewMode.DAY,
+            onClick = { onViewModeChange(ViewMode.DAY) },
+            onLongClick = onLongPress,
+            modifier = Modifier.weight(1f))
+    }
+}
+
+// ========== BOTTOM BAR ICON BUTTON ==========
+
+/**
+ * 底部栏图标按钮。
+ * 使用圆角矩形（RoundedCornerShape(8.dp)）作为点击背景/水波纹形状，
+ * 与右侧"年月周日"按钮的圆角矩形样式统一。
+ */
+@Composable
+fun BottomBarIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(44.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
     }
 }
 
@@ -1010,34 +1360,77 @@ fun BottomControlBar(
 
 @Composable
 fun PlanManagementRow(
+    year: Int,
+    month: Int,
+    day: Int,
     hasPlan: Boolean,
     onExport: () -> Unit,
     onDelete: () -> Unit,
+    onClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val deepGreen = Color(0xFF2E7D32)
+    val hl = remember(year, month, day) { LaoHuangLi.getHuangLi(year, month, day) }
+    val weekday = LunarCalendar.getWeekdayChinese(year, month, day)
 
     Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp)
     ) {
-        // 广告占位框
+        // 老黄历内容框（测试阶段临时替换广告位）
+        // 单击可弹出全屏老黄历详情页
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(88.dp)
+                .height(96.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFFF0F0F0), RoundedCornerShape(10.dp))
-                .border(1.dp, Color(0xFFD0D0D0), RoundedCornerShape(10.dp)),
+                .background(Color(0xFFFFF8E1), RoundedCornerShape(10.dp))
+                .border(1.dp, Color(0xFFE8D5A0), RoundedCornerShape(10.dp))
+                .pointerInput(year, month, day) {
+                    detectTapGestures(
+                        onTap = { onClick() }
+                    )
+                },
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "广告位",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Normal,
-                color = Color(0xFFBBBBBB)
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "${year}年${month}月${day}日 周$weekday  ${hl.yearGanzhi}年（${hl.zodiac}）",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF8B6914),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${hl.monthGanzhi}月 ${hl.dayGanzhi}日  值神：${hl.twelveGod}  星宿：${hl.star}宿(${hl.starRank})",
+                    fontSize = 12.sp,
+                    color = Color(0xFF8B6914),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${hl.chong}  煞${hl.shaDirection}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF8B6914),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "宜：${hl.yi.joinToString("、")}   忌：${hl.ji.joinToString("、")}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF8B6914),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1
+                )
+            }
         }
     }
 }
@@ -1050,13 +1443,14 @@ fun ViewModeButton(
     text: String,
     isSelected: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val bgColor = if (isSelected) Color(0xFF4A90D9) else Color.Transparent
-    val textColor = if (isSelected) Color.White else Color(0xFF666666)
+    val textColor = if (isSelected) Color.White else appFontColor()
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .padding(horizontal = 2.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(bgColor)
@@ -1069,8 +1463,8 @@ fun ViewModeButton(
     ) {
         Text(
             text = text,
-            fontSize = 15.sp,
-            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+            fontSize = 18.sp,
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
             color = textColor
         )
     }
@@ -1086,12 +1480,13 @@ fun MonthViewDetail(
     currentMonth: Int,
     currentDay: Int,
     weekStartMonday: Boolean,
+    holidayEntries: List<HolidayStorage.HolidayEntry>,
     onDayClick: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(20.dp)
-    val deepGreen = Color(0xFF2E7D32)
-    val cardBg = Color(0xFFF7F8FA)
+    val deepGreen = appFontColor()
+    val cardBg = appBgColor()
 
     val cal = Calendar.getInstance()
     cal.set(year, month - 1, 1)
@@ -1214,6 +1609,17 @@ fun MonthViewDetail(
                                                 color = if (isToday) Color.White else deepGreen,
                                                 textAlign = TextAlign.Center
                                             )
+                                            val holidayTag = HolidayStorage.getHolidayTag(holidayEntries, year, month, day)
+                                            if (holidayTag != null) {
+                                                Text(
+                                                    text = holidayTag,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isToday) Color(0xFFFFEB3B) else if (holidayTag == "班") Color(0xFFE65100) else Color(0xFFC62828),
+                                                    textAlign = TextAlign.Center,
+                                                    maxLines = 1
+                                                )
+                                            }
                                             if (specialDayName.isNotEmpty()) {
                                                 val isTerm = specialDays.first().type == LunarCalendar.SpecialDayType.SOLAR_TERM
                                                 val sdTextColor = if (isTerm) Color(0xFFE65100) else Color(0xFFC62828)
@@ -1225,7 +1631,7 @@ fun MonthViewDetail(
                                                     textAlign = TextAlign.Center,
                                                     maxLines = 1
                                                 )
-                                            } else {
+                                            } else if (holidayTag == null) {
                                                 Text(
                                                     text = lunarDayName,
                                                     fontSize = 14.sp,
@@ -1243,6 +1649,15 @@ fun MonthViewDetail(
                             }
                         }
                     }
+                }
+
+                // Divider line between rows (same style as the Week view)
+                item {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        thickness = 1.dp,
+                        color = Color(0xFFE8E8E8)
+                    )
                 }
             }
 
@@ -1265,12 +1680,13 @@ fun WeekViewDetail(
     currentMonth: Int,
     currentDay: Int,
     weekStartMonday: Boolean,
+    holidayEntries: List<HolidayStorage.HolidayEntry>,
     onDayClick: (Int, Int, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(20.dp)
-    val deepGreen = Color(0xFF2E7D32)
-    val cardBg = Color(0xFFF7F8FA)
+    val deepGreen = appFontColor()
+    val cardBg = appBgColor()
     val context = LocalContext.current
 
     // Determine the first day of the current week based on setting
@@ -1399,6 +1815,17 @@ fun WeekViewDetail(
                                             color = if (isToday) Color.White else deepGreen,
                                             textAlign = TextAlign.Center
                                         )
+                                        val holidayTag = HolidayStorage.getHolidayTag(holidayEntries, date.first, date.second, date.third)
+                                        if (holidayTag != null) {
+                                            Text(
+                                                text = holidayTag,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isToday) Color(0xFFFFEB3B) else if (holidayTag == "班") Color(0xFFE65100) else Color(0xFFC62828),
+                                                textAlign = TextAlign.Center,
+                                                maxLines = 1
+                                            )
+                                        }
                                         if (specialDayName.isNotEmpty()) {
                                             val isTerm = specialDays.first().type == LunarCalendar.SpecialDayType.SOLAR_TERM
                                             val sdTextColor = if (isTerm) Color(0xFFE65100) else Color(0xFFC62828)
@@ -1410,7 +1837,7 @@ fun WeekViewDetail(
                                                 textAlign = TextAlign.Center,
                                                 maxLines = 1
                                             )
-                                        } else {
+                                        } else if (holidayTag == null) {
                                             Text(
                                                 text = lunarDayName,
                                                 fontSize = 14.sp,
@@ -1484,8 +1911,8 @@ fun YearPickerDialog(
     onYearSelected: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val deepGreen = Color(0xFF2E7D32)
-    val lightGreenBg = Color(0xFFD4EDDA)
+    val deepGreen = appFontColor()
+    val lightGreenBg = appFontColor().copy(alpha = 0.15f)
     val years = (1900..2100).toList()
     val listState = rememberLazyListState()
 
@@ -1501,23 +1928,23 @@ fun YearPickerDialog(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.White)
+            .background(appBgColor())
     ) {
-                // Title bar
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(lightGreenBg)
-                        .padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "选择年份",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = deepGreen
-                    )
-                }
+        // Title bar
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(lightGreenBg)
+                .padding(vertical = 14.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "选择年份",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = deepGreen
+            )
+        }
 
                 // Year grid
                 LazyColumn(
@@ -1548,7 +1975,7 @@ fun YearPickerDialog(
                                             .weight(1f)
                                             .clip(RoundedCornerShape(10.dp))
                                             .background(
-                                                if (isCurrent) deepGreen else Color(0xFFF0F8F0),
+                                                if (isCurrent) deepGreen else appFontColor().copy(alpha = 0.06f),
                                                 RoundedCornerShape(10.dp)
                                             )
                                             .clickable { onYearSelected(y) }
@@ -1620,22 +2047,28 @@ fun SettingsDialog(
     reverseArrows: Boolean,
     onReverseArrowsChange: (Boolean) -> Unit,
     onCustomFestivalsClick: () -> Unit,
+    onAboutClick: () -> Unit,
+    onTechGuideClick: () -> Unit,
+    onPrivacyClick: () -> Unit,
+    onFontColorClick: () -> Unit,
+    onBgColorClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val deepGreen = Color(0xFF2E7D32)
+    val deepGreen = appFontColor()
     var dropdownExpanded by remember { mutableStateOf(false) }
 
     // Full-screen overlay
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.White)
+            .background(appBgColor())
     ) {
-        // Settings content
+        // Settings content (scrollable when taller than the screen on small devices)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 20.dp)
         ) {
             // Row: Weekly start day
@@ -1705,7 +2138,7 @@ fun SettingsDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFFF0F8F0))
+                    .background(appFontColor().copy(alpha = 0.06f))
                     .clickable { onReverseArrowsChange(!reverseArrows) }
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1740,12 +2173,80 @@ fun SettingsDialog(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // Row: Font Color
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(appFontColor().copy(alpha = 0.06f))
+                    .clickable { onFontColorClick() }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "字体颜色",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = deepGreen
+                )
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .border(1.dp, Color.Gray, RoundedCornerShape(6.dp))
+                        .background(appFontColor())
+                )
+                Text(
+                    text = ">",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = deepGreen
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Row: Background Color
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(appFontColor().copy(alpha = 0.06f))
+                    .clickable { onBgColorClick() }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "背景颜色",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = deepGreen
+                )
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .border(1.dp, Color.Gray, RoundedCornerShape(6.dp))
+                        .background(appBgColor())
+                )
+                Text(
+                    text = ">",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = deepGreen
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             // Row: Custom Lunar Festivals
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFFF0F8F0))
+                    .background(appFontColor().copy(alpha = 0.06f))
                     .clickable { onCustomFestivalsClick() }
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1753,6 +2254,87 @@ fun SettingsDialog(
             ) {
                 Text(
                     text = "自定义农历节日",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = deepGreen
+                )
+                Text(
+                    text = ">",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = deepGreen
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Row: Tech Guide
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(appFontColor().copy(alpha = 0.06f))
+                    .clickable { onTechGuideClick() }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "技术说明",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = deepGreen
+                )
+                Text(
+                    text = ">",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = deepGreen
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Row: Privacy & Permissions
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(appFontColor().copy(alpha = 0.06f))
+                    .clickable { onPrivacyClick() }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "隐私与权限",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = deepGreen
+                )
+                Text(
+                    text = ">",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = deepGreen
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Row: About
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(appFontColor().copy(alpha = 0.06f))
+                    .clickable { onAboutClick() }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "关于",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     color = deepGreen
@@ -1799,8 +2381,8 @@ fun CustomFestivalDialog(
     onReload: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val deepGreen = Color(0xFF2E7D32)
-    val lightGreenBg = Color(0xFFD4EDDA)
+    val deepGreen = appFontColor()
+    val lightGreenBg = appFontColor().copy(alpha = 0.15f)
     val context = LocalContext.current
     var festivals by remember { mutableStateOf(CustomFestivalStorage.loadAll(context)) }
     var showAddEdit by remember { mutableStateOf(false) }
@@ -1810,7 +2392,7 @@ fun CustomFestivalDialog(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.White)
+            .background(appBgColor())
     ) {
         // Title bar
         Box(
@@ -1858,7 +2440,7 @@ fun CustomFestivalDialog(
                                 .fillMaxWidth()
                                 .padding(vertical = 8.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFFF8F8F8))
+                                .background(appFontColor().copy(alpha = 0.06f))
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1981,7 +2563,7 @@ fun AddEditFestivalDialog(
     onSave: (CustomFestivalStorage.CustomFestival) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val deepGreen = Color(0xFF2E7D32)
+    val deepGreen = appFontColor()
     var name by remember { mutableStateOf(editingFestival?.name ?: "") }
     var lunarMonth by remember { mutableStateOf(editingFestival?.lunarMonth?.toString() ?: "1") }
     var lunarDay by remember { mutableStateOf(editingFestival?.lunarDay?.toString() ?: "1") }
@@ -2002,7 +2584,7 @@ fun AddEditFestivalDialog(
             modifier = Modifier
                 .fillMaxWidth(0.85f)
                 .clip(RoundedCornerShape(16.dp))
-                .background(Color.White)
+                .background(appBgColor())
                 .clickable(enabled = false) {} // Prevent click-through
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -2032,7 +2614,7 @@ fun AddEditFestivalDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFFF5F5F5))
+                    .background(appFontColor().copy(alpha = 0.06f))
                     .border(1.dp, Color(0xFFDDDDDD), RoundedCornerShape(8.dp))
                     .padding(12.dp),
                 decorationBox = { innerTextField ->
@@ -2063,7 +2645,7 @@ fun AddEditFestivalDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFFF5F5F5))
+                            .background(appFontColor().copy(alpha = 0.06f))
                             .border(1.dp, Color(0xFFDDDDDD), RoundedCornerShape(8.dp))
                             .padding(horizontal = 12.dp, vertical = 12.dp)
                     ) {
@@ -2105,7 +2687,7 @@ fun AddEditFestivalDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFFF5F5F5))
+                            .background(appFontColor().copy(alpha = 0.06f))
                             .border(1.dp, Color(0xFFDDDDDD), RoundedCornerShape(8.dp))
                             .padding(horizontal = 12.dp, vertical = 12.dp)
                     ) {
